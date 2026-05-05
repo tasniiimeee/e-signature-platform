@@ -33,7 +33,11 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
-
+import org.bouncycastle.cert.X509v3CertificateBuilder;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -173,6 +177,7 @@ public class SignatureService {
 private byte[] signPDF(byte[] pdfData, PrivateKey privateKey) throws Exception {
     PdfReader reader = new PdfReader(new ByteArrayInputStream(pdfData));
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
     PdfStamper stamper = PdfStamper.createSignature(reader, baos, '\0');
 
     PdfSignatureAppearance appearance = stamper.getSignatureAppearance();
@@ -180,25 +185,59 @@ private byte[] signPDF(byte[] pdfData, PrivateKey privateKey) throws Exception {
     appearance.setLocation("E-Signature Platform");
 
     ExternalDigest digest = new BouncyCastleDigest();
-    ExternalSignature signature = new PrivateKeySignature(privateKey, "SHA-256", "BC");
+    ExternalSignature signature = new PrivateKeySignature(privateKey, DigestAlgorithms.SHA256, "BC");
 
-   
+    // ✅ REAL FIX: generate self-signed certificate
+    java.security.cert.Certificate[] chain = new java.security.cert.Certificate[]{
+            generateSelfSignedCertificate(privateKey)
+    };
+
     MakeSignature.signDetached(
-        appearance, 
-        digest, 
-        signature, 
-        null,  
-        null, 
-        null,  
-        null, 
-        0,     
-        MakeSignature.CryptoStandard.CMS
+            appearance,
+            digest,
+            signature,
+            chain,
+            null,
+            null,
+            null,
+            8192,
+            MakeSignature.CryptoStandard.CMS
     );
 
     stamper.close();
     reader.close();
 
     return baos.toByteArray();
+}
+private java.security.cert.X509Certificate generateSelfSignedCertificate(PrivateKey privateKey) throws Exception {
+    KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+    keyGen.initialize(2048);
+    KeyPair keyPair = keyGen.generateKeyPair();
+
+    long now = System.currentTimeMillis();
+
+    org.bouncycastle.cert.X509v3CertificateBuilder certBuilder =
+            new org.bouncycastle.cert.X509v3CertificateBuilder(
+                    new org.bouncycastle.asn1.x500.X500Name("CN=E-Signature"),
+                    java.math.BigInteger.valueOf(now),
+                    new java.util.Date(now),
+                    new java.util.Date(now + 365 * 86400000L),
+                    new org.bouncycastle.asn1.x500.X500Name("CN=E-Signature"),
+                    org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded())
+            );
+
+    org.bouncycastle.operator.ContentSigner signer =
+            new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider("BC")
+                    .build(privateKey);
+
+    byte[] certBytes = certBuilder.build(signer).getEncoded();
+
+    java.security.cert.CertificateFactory certFactory =
+            java.security.cert.CertificateFactory.getInstance("X.509");
+
+    return (java.security.cert.X509Certificate)
+            certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
 }
     @Transactional(readOnly = true)
     public List<SignatureKeyResponse> getAllKeys() {
